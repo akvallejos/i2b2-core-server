@@ -1,11 +1,15 @@
 /*
- * Copyright (c) 2006-2007 Massachusetts General Hospital 
- * All rights reserved. This program and the accompanying materials 
- * are made available under the terms of the i2b2 Software License v1.0 
- * which accompanies this distribution. 
- * 
+ * Copyright (c) 2006-2007 Massachusetts General Hospital
+ * All rights reserved. This program and the accompanying materials
+ * are made available under the terms of the i2b2 Software License v1.0
+ * which accompanies this distribution.
+ *
  * Contributors:
  * 		Lori Phillips
+ *      Andrew Vallejos
+ *          - added citi training check
+ *          - changed user feedback messages to comply with web app security best practices
+ *          - reordered param setting so that user specific parameters overwrite global parameters
  */
 package edu.harvard.i2b2.pm.delegate;
 
@@ -20,6 +24,9 @@ import java.util.Hashtable;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.util.Locale;
 
 import javax.management.AttributeNotFoundException;
 import javax.management.InstanceNotFoundException;
@@ -100,7 +107,7 @@ public class ServicesHandler extends RequestHandler {
 	private ServicesMessage getServicesMsg = null;
 
 	public ServicesHandler(ServicesMessage servicesMsg) throws I2B2Exception{
-		log.debug("Setting the servicesMsg");	
+		log.debug("Setting the servicesMsg");
 
 		getServicesMsg = servicesMsg;
 		//setDbInfo(servicesMsg.getRequestMessageType().getMessageHeader());
@@ -119,22 +126,18 @@ public class ServicesHandler extends RequestHandler {
 		PMDbDao pmDb = new PMDbDao();
 
 		if (pmDb.verifyNotLockedOut(username))
-		{
-			saveLoginAttempt(pmDb, username, "LOCKED_OUT");
-			throw new Exception ("To many invalid attempts, user locked out");
-		}
+			throw new Exception ("To many invalid attempts, user locked out. Please contact us at crdw@mcw.edu.");
 		if (pmDb.verifyExpiredPassword(username) && (skipValidation == false))
-		{
-			saveLoginAttempt(pmDb, username, "PASSWORD_EXPIRED");
 			throw new Exception ("Password Expired.");
-		}
 
 
 		//if (method.equalsIgnoreCase("NTLM"))
-		if ((param.get("authentication_method") != null) && (!param.get("authentication_method").equals("")))
+		if ((param.get("authentication_method") != null) &&
+				(!param.get("authentication_method").equals("")) &&
+				(!param.get("authentication_method").equals("i2b2")) )
 		{
 			//String SQL_QUERY ="from UserData where oid='" + username + "'";
-			List response = null;	
+			List response = null;
 			try {
 				response = pmDb.getUser(username, null);
 			} catch (I2B2DAOException e1) {
@@ -155,7 +158,17 @@ public class ServicesHandler extends RequestHandler {
 				log.debug("Did not find user: " + username);
 				saveLoginAttempt(pmDb, username, "NONEXIST");
 
-				throw new Exception ("Username does not exist");
+				throw new Exception ("Username/Password is incorrect. Please contact the Biomedical Informatics Team at crdw@mcw.edu.");
+			}
+
+			//Check for citi training expiration date if it exists
+			if(param.get("citi_exp") != null){
+				DateFormat format = new SimpleDateFormat("MM-d-yyyy", Locale.ENGLISH);
+				String citi_exp = param.get("citi_exp") + ""; //prevents compile errors
+				Date citi_exp_date = format.parse(citi_exp);
+				Date today = new Date();
+				if(today.after(citi_exp_date))
+					throw new Exception("Citi Training expired on " + citi_exp + ". Please contact the Biomedical Informatics Team at crdw@mcw.edu.");
 			}
 
 			// Handle all internal classnames.  Also for backward compatibility need to call it NTLM.
@@ -210,13 +223,13 @@ public class ServicesHandler extends RequestHandler {
 					if	(!(user.getPassword().getValue().substring(1)).equals(password))
 					{
 						saveLoginAttempt(pmDb, username, "BADPASSWORD");
-						throw new Exception ("Current password is incorrect");
+						throw new Exception ("Username/password is incorrect");
 					}
-				}				
+				}
 				else if (!user.getPassword().getValue().equals(PMUtil.getInstance().getHashedPassword(password)))
 				{
 					saveLoginAttempt(pmDb, username, "BADPASSWORD");
-					throw new Exception ("Current password is incorrect");
+					throw new Exception ("Username/password is incorrect");
 
 				}
 			}
@@ -225,7 +238,7 @@ public class ServicesHandler extends RequestHandler {
 				saveLoginAttempt(pmDb, username, "NONEXIST");
 
 				log .debug("Did not find user: " + username + " with password: " + PMUtil.getInstance().getHashedPassword(password) );
-				throw new Exception ("Username does not exist");
+				throw new Exception ("Username/password is incorrect");
 			}
 
 			//passwordManagerService.validateSuppliedPassword(user, rmt.getPassword());
@@ -253,7 +266,7 @@ public class ServicesHandler extends RequestHandler {
 		if (session == null)
 			return false;
 
-		//check if the session is still valid	
+		//check if the session is still valid
 		log.debug("checking date");
 		log.debug("Now Time: "+ now.toString());
 		log.debug("Current session: "+ session.getExpiredDate().toString());
@@ -294,7 +307,7 @@ public class ServicesHandler extends RequestHandler {
 
 
 			//Get Enviornment Data
-			List response = null;	
+			List response = null;
 			try {
 				response = pmDb.getEnvironment(null);
 			} catch (I2B2DAOException e1) {
@@ -342,20 +355,22 @@ public class ServicesHandler extends RequestHandler {
 			UserType userType = new UserType();
 			userType.setUserName(rmt.getUsername());
 
+			//Get any params from the environment
+			for( it=pmDb.getEnvironmentData(domainId).iterator();it.hasNext();){
+				HiveParamData hivedata =(HiveParamData)it.next();
+				params.put(hivedata.getName(),  hivedata.getValue());
+
+			}
+
+			//Overwrite environmental params with user specific params - AKV
 			for( it=pmDb.getAllParam(userType,null,null).iterator();it.hasNext();){
-				UserParamData userdata =(UserParamData)it.next();			
+				UserParamData userdata =(UserParamData)it.next();
 				params.put(userdata.getName(),  userdata.getValue());
 
 				if (userdata.getName().equalsIgnoreCase("authentication_method"))
 					method  = userdata.getValue();
 
 			}
-			//Get any remaining params from the environment
-			for( it=pmDb.getEnvironmentData(domainId).iterator();it.hasNext();){
-				HiveParamData hivedata =(HiveParamData)it.next();
-				params.put(hivedata.getName(),  hivedata.getValue());
-
-			}	
 
 			String password = rmt.getPassword().getValue();
 
@@ -378,13 +393,13 @@ public class ServicesHandler extends RequestHandler {
 				UserType user = null;
 				for( it=pmDb.getUser(rmt.getUsername(), null).iterator();it.hasNext();){
 					user=(UserType)it.next();
-				}	
+				}
 
 				//user = userManagerService.getUserByUserName(k.getUsername());
 				if (user == null)
 				{
 					log.debug("Did not find user: " + rmt.getUsername());
-					throw new Exception ("Username does not exist");
+					throw new Exception ("Username/password is incorrect");
 				}
 				//check the password
 
@@ -402,7 +417,7 @@ public class ServicesHandler extends RequestHandler {
 				//uType.setKey(rmt.getPassword()); //return password so client can reaunthenticate later
 			}
 			//otherwise check username and password and generate a sessionkey for the password
-			else	
+			else
 			{
 
 				//get the user from the service
@@ -418,8 +433,6 @@ public class ServicesHandler extends RequestHandler {
 							skipValidation = true;
 					}
 
-					if (rmt.getUsername().equals("AGG_SERVICE_ACCOUNT"))
-						skipValidation = true;
 
 					UserType user = validateSuppliedPassword( rmt.getUsername(), rmt.getPassword().getValue(), params, skipValidation);
 					uType.setFullName(user.getFullName());
@@ -513,7 +526,7 @@ public class ServicesHandler extends RequestHandler {
 				else if (name.equals("delete_approval"))
 					return runDeleteApproval(pmDb, project, rmt.getUsername(), (ApprovalType) ((JAXBElement) obj).getValue() );
 				else if (name.equals("get_approval"))
-					return runGetApproval(pmDb, project, rmt.getUsername(), (ApprovalType) ((JAXBElement) obj).getValue() );				
+					return runGetApproval(pmDb, project, rmt.getUsername(), (ApprovalType) ((JAXBElement) obj).getValue() );
 				else if (name.equals("get_all_approval"))
 					return runGetAllApproval(pmDb, project, rmt.getUsername() );
 
@@ -522,9 +535,9 @@ public class ServicesHandler extends RequestHandler {
 				else if (name.equals("delete_cell"))
 					return runDeleteCell(pmDb, project, rmt.getUsername(), (CellDataType) ((JAXBElement) obj).getValue() );
 				else if (name.equals("get_cell"))
-					return runGetCell(pmDb, project, rmt.getUsername(), (CellDataType) ((JAXBElement) obj).getValue() );				
+					return runGetCell(pmDb, project, rmt.getUsername(), (CellDataType) ((JAXBElement) obj).getValue() );
 				else if (name.equals("get_all_cell"))
-					return runGetAllCell(pmDb, project, rmt.getUsername() );				
+					return runGetAllCell(pmDb, project, rmt.getUsername() );
 				else if (name.equals("set_global"))
 					return runSetParam(pmDb, project, name, rmt.getUsername(), (GlobalDataType) ((JAXBElement) obj).getValue() );
 				else if (name.equals("set_project_param"))
@@ -588,7 +601,7 @@ public class ServicesHandler extends RequestHandler {
 					param.setId(Integer.valueOf(value));
 					GlobalDataType global = new GlobalDataType();
 					global.getParam().add(param);
-					return runGetParam(pmDb, project, rmt.getUsername(), global  );				
+					return runGetParam(pmDb, project, rmt.getUsername(), global  );
 				}
 				else if (name.equals("get_all_global"))
 				{
@@ -620,7 +633,7 @@ public class ServicesHandler extends RequestHandler {
 					global.setUserName(rmt.getUsername());
 					global.getParam().add(param);
 					return runDeleteParam(pmDb, project, rmt.getUsername(), global);
-				}				
+				}
 				else if (name.equals("delete_cell_param"))
 				{
 					ParamType param = new ParamType();
@@ -628,7 +641,7 @@ public class ServicesHandler extends RequestHandler {
 					CellDataType global = new CellDataType();
 					global.getParam().add(param);
 					return runDeleteParam(pmDb, project, rmt.getUsername(), global);
-				}					
+				}
 				else if (name.equals("delete_hive_param"))
 				{
 					ParamType param = new ParamType();
@@ -636,7 +649,7 @@ public class ServicesHandler extends RequestHandler {
 					ConfigureType global = new ConfigureType();
 					global.getParam().add(param);
 					return runDeleteParam(pmDb, project, rmt.getUsername(), global);
-				}					
+				}
 				else if (name.equals("delete_user_param"))
 				{
 					ParamType param = new ParamType();
@@ -645,7 +658,7 @@ public class ServicesHandler extends RequestHandler {
 					global.setUserName(rmt.getUsername());
 					global.getParam().add(param);
 					return runDeleteParam(pmDb, project, rmt.getUsername(), global);
-				}					
+				}
 
 				else if (name.equals("get_all_hive_param"))
 				{
@@ -717,13 +730,13 @@ public class ServicesHandler extends RequestHandler {
 				else if (name.equals("get_all_project_request"))
 				{
 					return runGetAllProjectRequest(pmDb, project, rmt.getUsername()  );
-				}				
+				}
 				else if (name.equals("get_project_request"))
 				{
 					log.debug("Got this:" + value);
 					return null;
 				}
-			} 		
+			}
 		}
 		catch (Exception ee)
 		{
@@ -731,9 +744,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -742,7 +755,7 @@ public class ServicesHandler extends RequestHandler {
 		} catch (I2B2Exception e) {
 			log.error(e.getMessage());
 		}
-		return responseVdo;		
+		return responseVdo;
 	}
 
 	private String runUserLogin(PMDbDao pmDb, String caller, UserLoginType value) {
@@ -751,7 +764,7 @@ public class ServicesHandler extends RequestHandler {
 		try {
 
 
-			List response = null;	
+			List response = null;
 			try {
 				response = pmDb.getUserLogin(value, caller);
 			} catch (I2B2DAOException e1) {
@@ -770,7 +783,7 @@ public class ServicesHandler extends RequestHandler {
 			}
 			//everything is good so just return the same session key and the other info
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,users);
 
 		}
@@ -780,9 +793,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -802,23 +815,23 @@ public class ServicesHandler extends RequestHandler {
 
 			List<DataSource> response = new ArrayList<DataSource>();
 
-			//List<DataSource> availableDatasources = new ArrayList<DataSource>(); 
-			try { 
+			//List<DataSource> availableDatasources = new ArrayList<DataSource>();
+			try {
 
-				// retrieve the mbean server 
-				MBeanServer server = java.lang.management.ManagementFactory.getPlatformMBeanServer(); 
+				// retrieve the mbean server
+				MBeanServer server = java.lang.management.ManagementFactory.getPlatformMBeanServer();
 
-				// key for retrieving mbeans representing LOCAL Datasource 
-				// configuration from JMX namespace: jboss.as:subsystem=datasources (1) 
+				// key for retrieving mbeans representing LOCAL Datasource
+				// configuration from JMX namespace: jboss.as:subsystem=datasources (1)
 
 				//add datasources of given type to the list
 				addDatasourcesForKeyName(response, server,  "data-source");
 
-				// key for retrieving mbeans representing XA Datasource  
-				// configuration from JMX namespace: jboss.as:subsystem=datasources (2) 
-				addDatasourcesForKeyName(response, server,  "xa-data-source"); 
+				// key for retrieving mbeans representing XA Datasource
+				// configuration from JMX namespace: jboss.as:subsystem=datasources (2)
+				addDatasourcesForKeyName(response, server,  "xa-data-source");
 
-			} catch (Exception e) { 
+			} catch (Exception e) {
 
 				throw new Exception ("Database error in getting datasources");
 			}
@@ -861,9 +874,9 @@ public class ServicesHandler extends RequestHandler {
 								if (f.getName().equals("jndiName"))
 								{
 									datasource.setJndiName(f.get(nameClassPair.getObject()).toString());
-									datasource.setPoolName(datasource.getJndiName().substring(datasource.getJndiName().lastIndexOf("/")+1));     
+									datasource.setPoolName(datasource.getJndiName().substring(datasource.getJndiName().lastIndexOf("/")+1));
 									try {
-										
+
 										Connection conn = user.getConnection();
 										datasource.setActive(true);
 									} catch (Exception ee)
@@ -875,7 +888,7 @@ public class ServicesHandler extends RequestHandler {
 								{
 									Object obj = f.get(nameClassPair.getObject());
 									//System.out.println(f.getName());
-									
+
 									for(Field f2 : obj.getClass().getDeclaredFields()) {
 										f2.setAccessible(true);
 
@@ -886,8 +899,8 @@ public class ServicesHandler extends RequestHandler {
 												f3.setAccessible(true);
 												if (f3.getName().equals("user"))
 													datasource.setUserName(f3.get(obj2).toString());
-						//						else  if (f3.getName().equals("password"))
-						//							datasource.setPassword(f3.get(obj2).toString());
+												//						else  if (f3.getName().equals("password"))
+												//							datasource.setPassword(f3.get(obj2).toString());
 											}
 										}
 										if (f2.getName().equals("mcf"))
@@ -895,13 +908,13 @@ public class ServicesHandler extends RequestHandler {
 											Object obj2 = f2.get(obj);
 											for(Field f3 : obj2.getClass().getDeclaredFields()) {
 												f3.setAccessible(true);
-												  if (f3.getName().equals("connectionURL"))
+												if (f3.getName().equals("connectionURL"))
 													datasource.setConnectionUrl(f3.get(obj2).toString());
 												else  if (f3.getName().equals("driverClass"))
 													datasource.setDriverName(f3.get(obj2).toString());
 												else if (f3.getName().equals("jta"))
 													datasource.setJta(Boolean.valueOf(f3.get(obj2).toString()));
-												  System.out.println(f3.getName());
+												System.out.println(f3.getName());
 											}
 										}
 									}
@@ -924,7 +937,7 @@ public class ServicesHandler extends RequestHandler {
 				}
 			}
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,users);
 
 		}
@@ -934,9 +947,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -948,32 +961,32 @@ public class ServicesHandler extends RequestHandler {
 		return responseVdo;
 	}
 
-	private void addDatasourcesForKeyName(List availableDatasources, MBeanServer server, String dataSourceKeyName) throws MalformedObjectNameException, NamingException, AttributeNotFoundException, InstanceNotFoundException, MBeanException, ReflectionException { 
+	private void addDatasourcesForKeyName(List availableDatasources, MBeanServer server, String dataSourceKeyName) throws MalformedObjectNameException, NamingException, AttributeNotFoundException, InstanceNotFoundException, MBeanException, ReflectionException {
 
-		// Get the starting point of the namespace 
-		Context ctx = new InitialContext(); 
+		// Get the starting point of the namespace
+		Context ctx = new InitialContext();
 
 		// create jmx filter name eg. (3)
-		// "jboss.as:subsystem=datasources,xa-data-source=*" 
-		final ObjectName filterName = new ObjectName("jboss.as:subsystem=datasources," + dataSourceKeyName + "=*"); 
+		// "jboss.as:subsystem=datasources,xa-data-source=*"
+		final ObjectName filterName = new ObjectName("jboss.as:subsystem=datasources," + dataSourceKeyName + "=*");
 
-		// get the results matching given filter. (4) 
-		final Set<ObjectInstance> mBeans = server.queryMBeans(filterName, null); 
+		// get the results matching given filter. (4)
+		final Set<ObjectInstance> mBeans = server.queryMBeans(filterName, null);
 
-		// iterate over mbeans and retrieve information about jndi-name of datasource 
-		for (final ObjectInstance mBean : mBeans) { 
+		// iterate over mbeans and retrieve information about jndi-name of datasource
+		for (final ObjectInstance mBean : mBeans) {
 
-			// get name for mbean describing current datasource mbean   
-			ObjectName mbeanName = mBean.getObjectName(); 
+			// get name for mbean describing current datasource mbean
+			ObjectName mbeanName = mBean.getObjectName();
 
-			// one of the attributes of mbean is 
-			// "jndiName" , we will read that attribute now:(5) 
-			String bindName = (String) server.getAttribute(mbeanName, "jndiName"); 
+			// one of the attributes of mbean is
+			// "jndiName" , we will read that attribute now:(5)
+			String bindName = (String) server.getAttribute(mbeanName, "jndiName");
 
-			// having the jndi-name, we can look up the datasource instance 
-			DataSource ds = (DataSource) ctx.lookup(bindName); 
-			availableDatasources.add(ds); 
-		} 
+			// having the jndi-name, we can look up the datasource instance
+			DataSource ds = (DataSource) ctx.lookup(bindName);
+			availableDatasources.add(ds);
+		}
 	}
 
 	private String runSetDatasource(PMDbDao pmDb, String username, DatasourceType value) {
@@ -1016,7 +1029,7 @@ public class ServicesHandler extends RequestHandler {
 			StatusType status  = new StatusType();
 			status.setValue("1 records");
 			results.setStatus(status);
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,results);
 		}
 		catch (Exception ee)
@@ -1025,9 +1038,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -1041,7 +1054,7 @@ public class ServicesHandler extends RequestHandler {
 
 	//All Param process
 	private String runDeleteParam(PMDbDao pmDb, String project, String caller,
-			Object utype) {
+								  Object utype) {
 		ResponseMessageType responseMessageType = null;
 
 		try {
@@ -1052,7 +1065,7 @@ public class ServicesHandler extends RequestHandler {
 			StatusType status  = new StatusType();
 			status.setValue(result + " records");
 			results.setStatus(status);
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,results);
 
 		}
@@ -1062,9 +1075,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -1077,7 +1090,7 @@ public class ServicesHandler extends RequestHandler {
 	}
 
 	private String runSetParam(PMDbDao pmDb, String project, String name, String caller,
-			Object utype) {
+							   Object utype) {
 		ResponseMessageType responseMessageType = null;
 
 		try {
@@ -1092,7 +1105,7 @@ public class ServicesHandler extends RequestHandler {
 			StatusType status  = new StatusType();
 			status.setValue(result + " records");
 			results.setStatus(status);
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,results);
 
 		}
@@ -1102,9 +1115,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -1125,7 +1138,7 @@ public class ServicesHandler extends RequestHandler {
 		try {
 
 
-			List response = null;	
+			List response = null;
 			try {
 				response = pmDb.getAllProjectRequest(project, caller);
 			} catch (I2B2DAOException e1) {
@@ -1144,7 +1157,7 @@ public class ServicesHandler extends RequestHandler {
 			}
 			//everything is good so just return the same session key and the other info
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,users);
 
 		}
@@ -1154,9 +1167,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -1169,7 +1182,7 @@ public class ServicesHandler extends RequestHandler {
 	}
 
 	private String runSetProjectRequest(PMDbDao pmDb, String project, String caller,
-			ProjectRequestType value) {
+										ProjectRequestType value) {
 		ResponseMessageType responseMessageType = null;
 
 		try {
@@ -1181,7 +1194,7 @@ public class ServicesHandler extends RequestHandler {
 			String  result = "";
 
 
-			List response = null;	
+			List response = null;
 			try {
 				response = pmDb.setProjectRequest(value,project, caller);
 			} catch (I2B2DAOException e1) {
@@ -1205,7 +1218,7 @@ public class ServicesHandler extends RequestHandler {
 			StatusType status  = new StatusType();
 			status.setValue(result);
 			results.setStatus(status);
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,results);
 
 		}
@@ -1215,9 +1228,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -1237,7 +1250,7 @@ public class ServicesHandler extends RequestHandler {
 		try {
 
 
-			List response = null;	
+			List response = null;
 			try {
 				int result = -1;
 				//response = pmDb.getAllParam(utype,project, caller);
@@ -1260,7 +1273,7 @@ public class ServicesHandler extends RequestHandler {
 					{
 						RoleType user = (RoleType)it.next();
 						((RolesType) users).getRole().add(user);
-					}					
+					}
 
 				} else if ((utype instanceof ConfigureType) &&
 						((((ConfigureType) utype).getDomainId() == null)))
@@ -1309,7 +1322,7 @@ public class ServicesHandler extends RequestHandler {
 					}
 					((UsersType)users).getUser().add(userType);
 					//	}
-				} else 
+				} else
 				{
 					response = pmDb.getAllParam(utype,project, caller);
 
@@ -1336,7 +1349,7 @@ public class ServicesHandler extends RequestHandler {
 
 			//everything is good so just return the same session key and the other info
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,users);
 
 		}
@@ -1346,9 +1359,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -1361,7 +1374,7 @@ public class ServicesHandler extends RequestHandler {
 	}
 
 	private String runGetParam(PMDbDao pmDb, String project, String caller,
-			Object utype) {
+							   Object utype) {
 		ResponseMessageType responseMessageType = null;
 
 		Object users = null;
@@ -1369,7 +1382,7 @@ public class ServicesHandler extends RequestHandler {
 		try {
 
 			log.debug("In GetGlobal");
-			List response = null;	
+			List response = null;
 			try {
 				int result = -1;
 				if (utype instanceof RoleType)
@@ -1417,7 +1430,7 @@ public class ServicesHandler extends RequestHandler {
 
 
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,users);
 
 		}
@@ -1427,9 +1440,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -1444,7 +1457,7 @@ public class ServicesHandler extends RequestHandler {
 
 	//All Users process
 	private String runDeleteUser(PMDbDao pmDb, String project, String caller,
-			String user) {
+								 String user) {
 		ResponseMessageType responseMessageType = null;
 
 		try {
@@ -1454,7 +1467,7 @@ public class ServicesHandler extends RequestHandler {
 			StatusType status  = new StatusType();
 			status.setValue(result + " records");
 			results.setStatus(status);
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,results);
 
 		}
@@ -1464,9 +1477,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -1490,7 +1503,7 @@ public class ServicesHandler extends RequestHandler {
 			StatusType status  = new StatusType();
 			status.setValue(result + " records");
 			results.setStatus(status);
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,results);
 
 		}
@@ -1500,9 +1513,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -1515,7 +1528,7 @@ public class ServicesHandler extends RequestHandler {
 	}
 
 	private String runSetUser(PMDbDao pmDb, String project, String caller,
-			UserType utype) {
+							  UserType utype) {
 		ResponseMessageType responseMessageType = null;
 
 		try {
@@ -1525,7 +1538,7 @@ public class ServicesHandler extends RequestHandler {
 			StatusType status  = new StatusType();
 			status.setValue(result + " records");
 			results.setStatus(status);
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,results);
 
 		}
@@ -1535,9 +1548,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -1556,7 +1569,7 @@ public class ServicesHandler extends RequestHandler {
 		try {
 
 
-			List response = null;	
+			List response = null;
 			try {
 				response = pmDb.getAllUser(project, caller);
 			} catch (I2B2DAOException e1) {
@@ -1576,7 +1589,7 @@ public class ServicesHandler extends RequestHandler {
 			}
 			//everything is good so just return the same session key and the other info
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,users);
 
 		}
@@ -1586,9 +1599,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -1601,13 +1614,13 @@ public class ServicesHandler extends RequestHandler {
 	}
 
 	private String runGetUser(PMDbDao pmDb, String project, String caller,
-			String username) {
+							  String username) {
 		ResponseMessageType responseMessageType = null;
 
 		try {
 
 
-			List response = null;	
+			List response = null;
 			try {
 				response = pmDb.getUser(username, caller);
 			} catch (I2B2DAOException e1) {
@@ -1626,7 +1639,7 @@ public class ServicesHandler extends RequestHandler {
 				throw new Exception ("Username does not exist");
 
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,user);
 
 		}
@@ -1636,9 +1649,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -1661,7 +1674,7 @@ public class ServicesHandler extends RequestHandler {
 			StatusType status  = new StatusType();
 			status.setValue(result + " records");
 			results.setStatus(status);
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,results);
 
 		}
@@ -1671,9 +1684,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -1686,7 +1699,7 @@ public class ServicesHandler extends RequestHandler {
 	}
 
 	private String runSetCell(PMDbDao pmDb, String project, String caller,
-			CellDataType utype) {
+							  CellDataType utype) {
 		ResponseMessageType responseMessageType = null;
 
 		try {
@@ -1699,7 +1712,7 @@ public class ServicesHandler extends RequestHandler {
 			StatusType status  = new StatusType();
 			status.setValue(result + " records");
 			results.setStatus(status);
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,results);
 
 		}
@@ -1709,9 +1722,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -1730,7 +1743,7 @@ public class ServicesHandler extends RequestHandler {
 		try {
 
 
-			List response = null;	
+			List response = null;
 			try {
 				response = pmDb.getAllCell(project, caller);
 			} catch (I2B2DAOException e1) {
@@ -1750,7 +1763,7 @@ public class ServicesHandler extends RequestHandler {
 			}
 			//everything is good so just return the same session key and the other info
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,users);
 
 		}
@@ -1760,9 +1773,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -1775,14 +1788,14 @@ public class ServicesHandler extends RequestHandler {
 	}
 
 	private String runGetCell(PMDbDao pmDb,  String project,
-			String owner, CellDataType utype) {
+							  String owner, CellDataType utype) {
 		ResponseMessageType responseMessageType = null;
 
 		try {
 
 			log.debug("In runGetCell, with cell of: " + utype.getId() + " | " +utype.getProjectPath());
 
-			List response = null;	
+			List response = null;
 			try {
 				response = pmDb.getCell(utype.getId(), utype.getProjectPath(), true);
 			} catch (I2B2DAOException e1) {
@@ -1803,7 +1816,7 @@ public class ServicesHandler extends RequestHandler {
 
 
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,user);
 
 		}
@@ -1813,9 +1826,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -1840,7 +1853,7 @@ public class ServicesHandler extends RequestHandler {
 			StatusType status  = new StatusType();
 			status.setValue(result + " records");
 			results.setStatus(status);
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,results);
 
 		}
@@ -1850,9 +1863,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -1865,7 +1878,7 @@ public class ServicesHandler extends RequestHandler {
 	}
 
 	private String runSetApproval(PMDbDao pmDb, String project, String caller,
-			ApprovalType utype) {
+								  ApprovalType utype) {
 		ResponseMessageType responseMessageType = null;
 
 		try {
@@ -1878,7 +1891,7 @@ public class ServicesHandler extends RequestHandler {
 			StatusType status  = new StatusType();
 			status.setValue(result + "");
 			results.setStatus(status);
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,results);
 
 		}
@@ -1888,9 +1901,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -1909,7 +1922,7 @@ public class ServicesHandler extends RequestHandler {
 		try {
 
 
-			List response = null;	
+			List response = null;
 			try {
 				response = pmDb.getAllApproval(project, caller);
 			} catch (I2B2DAOException e1) {
@@ -1929,7 +1942,7 @@ public class ServicesHandler extends RequestHandler {
 			}
 			//everything is good so just return the same session key and the other info
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,users);
 
 		}
@@ -1939,9 +1952,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -1954,12 +1967,12 @@ public class ServicesHandler extends RequestHandler {
 	}
 
 	private String runGetApproval(PMDbDao pmDb,  String project,
-			String owner, ApprovalType utype) {
+								  String owner, ApprovalType utype) {
 		ResponseMessageType responseMessageType = null;
 
 		try {
 
-			List response = null;	
+			List response = null;
 			try {
 				response = pmDb.getApproval(utype, true);
 			} catch (I2B2DAOException e1) {
@@ -1979,7 +1992,7 @@ public class ServicesHandler extends RequestHandler {
 				log.debug("added: " + user.getName());
 			}
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,users);
 
 		}
@@ -1989,9 +2002,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -2016,7 +2029,7 @@ public class ServicesHandler extends RequestHandler {
 			StatusType status  = new StatusType();
 			status.setValue(result + " records");
 			results.setStatus(status);
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,results);
 
 		}
@@ -2026,9 +2039,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -2041,7 +2054,7 @@ public class ServicesHandler extends RequestHandler {
 	}
 
 	private String runSetProject(PMDbDao pmDb, String project, String caller,
-			ProjectType utype) {
+								 ProjectType utype) {
 		ResponseMessageType responseMessageType = null;
 
 		try {
@@ -2054,7 +2067,7 @@ public class ServicesHandler extends RequestHandler {
 			StatusType status  = new StatusType();
 			status.setValue(result + " records");
 			results.setStatus(status);
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,results);
 
 		}
@@ -2064,9 +2077,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -2085,7 +2098,7 @@ public class ServicesHandler extends RequestHandler {
 		try {
 
 
-			List response = null;	
+			List response = null;
 			try {
 				response = pmDb.getAllProject(project, caller);
 			} catch (I2B2DAOException e1) {
@@ -2106,7 +2119,7 @@ public class ServicesHandler extends RequestHandler {
 			}
 			//everything is good so just return the same session key and the other info
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,users);
 
 		}
@@ -2116,9 +2129,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -2135,7 +2148,7 @@ public class ServicesHandler extends RequestHandler {
 
 		try {
 
-			List response = null;	
+			List response = null;
 			try {
 				response = pmDb.getProject(utype, true);
 			} catch (I2B2DAOException e1) {
@@ -2155,7 +2168,7 @@ public class ServicesHandler extends RequestHandler {
 
 
 			//everything is good so just return the same session key and the other info
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());    
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,user);
 
 		}
@@ -2165,9 +2178,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
@@ -2182,7 +2195,7 @@ public class ServicesHandler extends RequestHandler {
 
 
 	private String runGetUserConfiguration(PMDbDao pmDb, GetUserConfigurationType userType,
-			String username, String domain, ConfigureType cType, UserType uType) {
+										   String username, String domain, ConfigureType cType, UserType uType) {
 
 		//ConfigureType cType = new ConfigureType();
 		//UserType uType = new UserType();
@@ -2221,7 +2234,7 @@ public class ServicesHandler extends RequestHandler {
 						pType.getParam().add(vardata);
 					}
 
-					//Get Roles for the project 
+					//Get Roles for the project
 					for(Iterator it2=pmDb.getRole(username, pType.getId()).iterator();it2.hasNext();){
 						RoleType g = (RoleType) it2.next();
 
@@ -2273,7 +2286,7 @@ public class ServicesHandler extends RequestHandler {
 
 					log.debug("pdata: " + g.getProject());
 
-					//Only get valid projects, 
+					//Only get valid projects,
 
 					//GroupData pData = globaldataservice.getGroupDataByOid(g.getName());
 
@@ -2335,7 +2348,7 @@ public class ServicesHandler extends RequestHandler {
 
 				// Get all cells
 				for(Iterator it=pmDb.getCell("@", "/", true).iterator();it.hasNext();){
-					CellDataType cell =(CellDataType)it.next();			
+					CellDataType cell =(CellDataType)it.next();
 
 
 					if (cell == null)
@@ -2343,22 +2356,22 @@ public class ServicesHandler extends RequestHandler {
 						throw new Exception ("No cells are be registered yet");
 					}
 
-					log.debug("my url is " + cell.getUrl());	
+					log.debug("my url is " + cell.getUrl());
 
 
 					for(Iterator it2=pmDb.getCellParam(cell.getId(),"/").iterator();it2.hasNext();){
-						ParamType cellParam =(ParamType)it2.next();			
-						cell.getParam().add(cellParam);		
+						ParamType cellParam =(ParamType)it2.next();
+						cell.getParam().add(cellParam);
 					}
-					aType.getCellData().add(cell);					
-				}  
+					aType.getCellData().add(cell);
+				}
 
 				// Get project specific cells
 				for (ProjectType p : uType.getProject()) {
 					log.debug("Searching cells for: " + p.getId() + ":" + p.getPath());
 					if (p.getPath() != null)
 						for(Iterator it=pmDb.getCell("@", p.getPath(), true).iterator();it.hasNext();){
-							CellDataType cell =(CellDataType)it.next();			
+							CellDataType cell =(CellDataType)it.next();
 
 
 							if (cell == null)
@@ -2366,16 +2379,16 @@ public class ServicesHandler extends RequestHandler {
 								throw new Exception ("No cells are be registered yet");
 							}
 
-							log.debug("my url is " + cell.getUrl());	
+							log.debug("my url is " + cell.getUrl());
 
 
 							for(Iterator it2=pmDb.getCellParam(cell.getId(),"/").iterator();it2.hasNext();){
-								ParamType cellParam =(ParamType)it2.next();			
-								cell.getParam().add(cellParam);		
+								ParamType cellParam =(ParamType)it2.next();
+								cell.getParam().add(cellParam);
 							}
 
-							aType.getCellData().add(cell);					
-						}  
+							aType.getCellData().add(cell);
+						}
 				}
 
 				cType.setCellDatas(aType);
@@ -2397,7 +2410,7 @@ public class ServicesHandler extends RequestHandler {
 
 			for(Iterator it=pmDb.getAllParam(new GlobalDataType(), null, null).iterator();it.hasNext();){
 
-				//GlobalDataType globaldata =(GlobalDataType)it.next();			
+				//GlobalDataType globaldata =(GlobalDataType)it.next();
 
 				//		List gData = globaldataservice.getGlobalData();
 				//	GlobalDataType gValue = new GlobalDataType();
@@ -2412,13 +2425,13 @@ public class ServicesHandler extends RequestHandler {
 
 				//	gValue.getParam().add(globaldata);
 
-				ParamType param =(ParamType)it.next();	
+				ParamType param =(ParamType)it.next();
 				globaldata.getParam().add(param);
 			}
 			cType.setGlobalData(globaldata);
 
-			//			}			
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			//			}
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.createBuildResponse(messageHeader,cType);
 
 		}
@@ -2428,9 +2441,9 @@ public class ServicesHandler extends RequestHandler {
 			// throw new Exception (ee.getMessage());
 			ee.printStackTrace();
 
-			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());          
+			MessageHeaderType messageHeader = MessageFactory.createResponseMessageHeader(getServicesMsg.getRequestMessageType().getMessageHeader());
 			responseMessageType = MessageFactory.doBuildErrorResponse(messageHeader,
-					ee.getMessage());			
+					ee.getMessage());
 		}
 
 		String responseVdo = "DONE";
